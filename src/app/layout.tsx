@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { showroom } from "@/lib/showroom";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://suksesjayamobilindo2.example"),
+  metadataBase: new URL("https://sukses-jaya-mobilindo-2.vercel.app"),
   title: {
     default: "Sukses Jaya Mobilindo 2 | Showroom Mobil Berkualitas Pekanbaru",
-    template: "%s | Sukses Jaya Mobilindo 2"
+    template: "%s | Sukses Jaya Mobilindo 2",
   },
   description:
     "Showroom mobil baru dan bekas berkualitas di Pekanbaru. Tersedia pembelian cash, kredit, tukar tambah, konsultasi unit, dan booking test drive.",
@@ -15,8 +16,10 @@ export const metadata: Metadata = {
     description:
       "Premium car showroom di Jl. Soekarno-Hatta Pekanbaru dengan rating 5.0 dari 602 ulasan.",
     type: "website",
-    locale: "id_ID"
-  }
+    locale: "id_ID",
+    url: "https://sukses-jaya-mobilindo-2.vercel.app",
+    siteName: "Sukses Jaya Mobilindo 2",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -29,10 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     aggregateRating: {
       "@type": "AggregateRating",
       ratingValue: "5.0",
-      reviewCount: "602"
+      reviewCount: "602",
     },
     openingHours: "Mo-Su 09:00-18:00",
-    areaServed: "Pekanbaru, Riau"
+    areaServed: "Pekanbaru, Riau",
   };
 
   return (
@@ -42,7 +45,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(localBusinessJsonLd) }}
         />
+
         {children}
+
+        <Script src="/limcf-connector.js" strategy="afterInteractive" />
       </body>
     </html>
   );

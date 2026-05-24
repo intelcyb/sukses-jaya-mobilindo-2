@@ -45,6 +45,28 @@
     return "desktop";
   }
 
+  function normalizeUrl(url) {
+    if (!url) return "";
+
+    try {
+      return String(url).toLowerCase();
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function isWhatsAppUrl(url) {
+    const lowerUrl = normalizeUrl(url);
+
+    return (
+      lowerUrl.includes("wa.me") ||
+      lowerUrl.includes("whatsapp.com") ||
+      lowerUrl.includes("api.whatsapp.com") ||
+      lowerUrl.includes("web.whatsapp.com") ||
+      lowerUrl.includes("send?phone=")
+    );
+  }
+
   function buildTrackPayload(eventType, metadata = {}) {
     return {
       website_id: LIMCF_CONFIG.websiteId,
@@ -65,49 +87,91 @@
     };
   }
 
+  function sendTrackWithBeacon(url, payload) {
+    if (!navigator.sendBeacon) return false;
+
+    try {
+      const blob = new Blob([JSON.stringify(payload)], {
+        type: "application/json",
+      });
+
+      return navigator.sendBeacon(url, blob);
+    } catch (error) {
+      warn("sendBeacon error:", error);
+      return false;
+    }
+  }
+
+  function sendTrackWithFetch(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    })
+      .then(async (response) => {
+        const text = await response.text().catch(() => "");
+
+        if (!response.ok) {
+          warn("Track API failed:", response.status, text);
+          return false;
+        }
+
+        log("Track API success:", payload.event_type, text);
+        return true;
+      })
+      .catch((error) => {
+        warn("Track fetch error:", error);
+        return false;
+      });
+  }
+
   function trackEvent(eventType, metadata = {}) {
     const payload = buildTrackPayload(eventType, metadata);
     const url = `${LIMCF_CONFIG.apiBaseUrl}/api/track`;
 
     log("Tracking event:", eventType, payload);
 
+    const beaconSent = sendTrackWithBeacon(url, payload);
+
+    if (beaconSent) {
+      log("Event sent with sendBeacon:", eventType);
+      return;
+    }
+
+    sendTrackWithFetch(url, payload);
+  }
+
+  async function trackEventAndWait(eventType, metadata = {}) {
+    const payload = buildTrackPayload(eventType, metadata);
+    const url = `${LIMCF_CONFIG.apiBaseUrl}/api/track`;
+
+    log("Tracking event and waiting:", eventType, payload);
+
     try {
-      if (navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify(payload)], {
-          type: "application/json",
-        });
-
-        const sent = navigator.sendBeacon(url, blob);
-
-        if (sent) {
-          log("Event sent with sendBeacon:", eventType);
-          return;
-        }
-      }
-
-      fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
         keepalive: true,
-      })
-        .then(async (response) => {
-          const text = await response.text().catch(() => "");
+      });
 
-          if (!response.ok) {
-            warn("Track API failed:", response.status, text);
-            return;
-          }
+      const text = await response.text().catch(() => "");
 
-          log("Track API success:", eventType, text);
-        })
-        .catch((error) => {
-          warn("Track fetch error:", error);
-        });
+      if (!response.ok) {
+        warn("Track wait API failed:", response.status, text);
+        return false;
+      }
+
+      log("Track wait API success:", eventType, text);
+      return true;
     } catch (error) {
-      warn("Track event error:", error);
+      warn("Track wait fetch error:", error);
+      return false;
     }
   }
 
@@ -159,18 +223,6 @@
     }
   }
 
-  function isWhatsAppUrl(url) {
-    if (!url) return false;
-
-    const lowerUrl = url.toLowerCase();
-
-    return (
-      lowerUrl.includes("wa.me") ||
-      lowerUrl.includes("whatsapp") ||
-      lowerUrl.includes("api.whatsapp.com")
-    );
-  }
-
   function setupPageViewTracking() {
     trackEvent("page_view", {
       event_label: "Page View",
@@ -180,21 +232,53 @@
   function setupWhatsAppTracking() {
     document.addEventListener(
       "click",
-      function (event) {
+      async function (event) {
         const target = event.target;
         const link = target && target.closest ? target.closest("a") : null;
 
         if (!link) return;
 
-        const href = link.getAttribute("href") || "";
+        const rawHref = link.getAttribute("href") || "";
+        const finalHref = link.href || rawHref;
 
-        if (!isWhatsAppUrl(href)) return;
+        if (!isWhatsAppUrl(rawHref) && !isWhatsAppUrl(finalHref)) return;
+
+        log("WhatsApp link clicked:", {
+          rawHref,
+          finalHref,
+          text: link.innerText,
+        });
+
+        const shouldOpenNewTab =
+          link.getAttribute("target") === "_blank" ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey;
 
         trackEvent("whatsapp_click", {
           event_label: "WhatsApp Click",
           button_text: (link.innerText || "WhatsApp Button").trim(),
-          target_url: link.href,
+          target_url: finalHref,
+          raw_href: rawHref,
         });
+
+        /**
+         * Untuk link WhatsApp, browser sering pindah terlalu cepat.
+         * Jadi kita tahan sebentar khusus klik normal agar event sempat masuk.
+         */
+        if (!shouldOpenNewTab) {
+          event.preventDefault();
+
+          await trackEventAndWait("whatsapp_click_confirmed", {
+            event_label: "WhatsApp Click Confirmed",
+            button_text: (link.innerText || "WhatsApp Button").trim(),
+            target_url: finalHref,
+            raw_href: rawHref,
+          });
+
+          window.location.href = finalHref;
+        }
       },
       true
     );
@@ -343,6 +427,7 @@
 
     window.LIMCF = {
       track: trackEvent,
+      trackAndWait: trackEventAndWait,
       submitLead,
       config: LIMCF_CONFIG,
     };

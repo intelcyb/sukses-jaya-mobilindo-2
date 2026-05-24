@@ -4,7 +4,20 @@
     clientId: "514a85f2-341e-47aa-97ad-5187cae0ec9d",
     websiteId: "4997815f-32d9-41d2-bfc8-518af610de47",
     businessName: "Sukses Jaya Mobilindo",
+    debug: true,
   };
+
+  function log(...args) {
+    if (LIMCF_CONFIG.debug) {
+      console.log("[LIMCF Connector]", ...args);
+    }
+  }
+
+  function warn(...args) {
+    if (LIMCF_CONFIG.debug) {
+      console.warn("[LIMCF Connector]", ...args);
+    }
+  }
 
   function getVisitorId() {
     const key = "limcf_visitor_id";
@@ -32,70 +45,130 @@
     return "desktop";
   }
 
-  async function trackEvent(eventType, metadata = {}) {
+  function buildTrackPayload(eventType, metadata = {}) {
+    return {
+      website_id: LIMCF_CONFIG.websiteId,
+      client_id: LIMCF_CONFIG.clientId,
+      event_type: eventType,
+      page_path: window.location.pathname || "/",
+      page_title: document.title || LIMCF_CONFIG.businessName,
+      visitor_id: getVisitorId(),
+      device_type: getDeviceType(),
+      referrer: document.referrer || null,
+      user_agent: navigator.userAgent || null,
+      metadata: {
+        business_name: LIMCF_CONFIG.businessName,
+        current_url: window.location.href,
+        timestamp: new Date().toISOString(),
+        ...metadata,
+      },
+    };
+  }
+
+  function trackEvent(eventType, metadata = {}) {
+    const payload = buildTrackPayload(eventType, metadata);
+    const url = `${LIMCF_CONFIG.apiBaseUrl}/api/track`;
+
+    log("Tracking event:", eventType, payload);
+
     try {
-      await fetch(`${LIMCF_CONFIG.apiBaseUrl}/api/track`, {
+      if (navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify(payload)], {
+          type: "application/json",
+        });
+
+        const sent = navigator.sendBeacon(url, blob);
+
+        if (sent) {
+          log("Event sent with sendBeacon:", eventType);
+          return;
+        }
+      }
+
+      fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          website_id: LIMCF_CONFIG.websiteId,
-          client_id: LIMCF_CONFIG.clientId,
-          event_type: eventType,
-          page_path: window.location.pathname || "/",
-          page_title: document.title || LIMCF_CONFIG.businessName,
-          visitor_id: getVisitorId(),
-          device_type: getDeviceType(),
-          referrer: document.referrer || null,
-          user_agent: navigator.userAgent || null,
-          metadata: {
-            business_name: LIMCF_CONFIG.businessName,
-            current_url: window.location.href,
-            timestamp: new Date().toISOString(),
-            ...metadata,
-          },
-        }),
-      });
+        body: JSON.stringify(payload),
+        keepalive: true,
+      })
+        .then(async (response) => {
+          const text = await response.text().catch(() => "");
+
+          if (!response.ok) {
+            warn("Track API failed:", response.status, text);
+            return;
+          }
+
+          log("Track API success:", eventType, text);
+        })
+        .catch((error) => {
+          warn("Track fetch error:", error);
+        });
     } catch (error) {
-      console.warn("LIMCF track error:", error);
+      warn("Track event error:", error);
     }
   }
 
   async function submitLead(data = {}) {
+    const payload = {
+      website_id: LIMCF_CONFIG.websiteId,
+      client_id: LIMCF_CONFIG.clientId,
+      name: data.name || "",
+      phone: data.phone || "",
+      email: data.email || "",
+      message: data.message || "",
+      source: data.source || "Website Sukses Jaya Mobilindo",
+      status: "new",
+      metadata: {
+        business_name: LIMCF_CONFIG.businessName,
+        page_path: window.location.pathname || "/",
+        page_title: document.title || LIMCF_CONFIG.businessName,
+        current_url: window.location.href,
+        visitor_id: getVisitorId(),
+        device_type: getDeviceType(),
+        timestamp: new Date().toISOString(),
+        ...data.metadata,
+      },
+    };
+
+    log("Submitting lead:", payload);
+
     try {
       const response = await fetch(`${LIMCF_CONFIG.apiBaseUrl}/api/leads`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          website_id: LIMCF_CONFIG.websiteId,
-          client_id: LIMCF_CONFIG.clientId,
-          name: data.name || "",
-          phone: data.phone || "",
-          email: data.email || "",
-          message: data.message || "",
-          source: data.source || "Website Sukses Jaya Mobilindo",
-          status: "new",
-          metadata: {
-            business_name: LIMCF_CONFIG.businessName,
-            page_path: window.location.pathname || "/",
-            page_title: document.title || LIMCF_CONFIG.businessName,
-            current_url: window.location.href,
-            visitor_id: getVisitorId(),
-            device_type: getDeviceType(),
-            timestamp: new Date().toISOString(),
-            ...data.metadata,
-          },
-        }),
+        body: JSON.stringify(payload),
       });
 
-      return response.ok;
+      const text = await response.text().catch(() => "");
+
+      if (!response.ok) {
+        warn("Lead API failed:", response.status, text);
+        return false;
+      }
+
+      log("Lead API success:", text);
+      return true;
     } catch (error) {
-      console.warn("LIMCF lead error:", error);
+      warn("Lead submit error:", error);
       return false;
     }
+  }
+
+  function isWhatsAppUrl(url) {
+    if (!url) return false;
+
+    const lowerUrl = url.toLowerCase();
+
+    return (
+      lowerUrl.includes("wa.me") ||
+      lowerUrl.includes("whatsapp") ||
+      lowerUrl.includes("api.whatsapp.com")
+    );
   }
 
   function setupPageViewTracking() {
@@ -105,101 +178,70 @@
   }
 
   function setupWhatsAppTracking() {
-    const whatsappLinks = document.querySelectorAll(
-      'a[href*="wa.me"], a[href*="whatsapp"], a[href*="api.whatsapp.com"]'
-    );
+    document.addEventListener(
+      "click",
+      function (event) {
+        const target = event.target;
+        const link = target && target.closest ? target.closest("a") : null;
 
-    whatsappLinks.forEach((link) => {
-      link.addEventListener("click", function () {
+        if (!link) return;
+
+        const href = link.getAttribute("href") || "";
+
+        if (!isWhatsAppUrl(href)) return;
+
         trackEvent("whatsapp_click", {
           event_label: "WhatsApp Click",
-          button_text: link.innerText || "WhatsApp Button",
+          button_text: (link.innerText || "WhatsApp Button").trim(),
           target_url: link.href,
         });
-      });
-    });
+      },
+      true
+    );
+
+    log("WhatsApp tracking ready");
   }
 
   function setupPhoneTracking() {
-    const phoneLinks = document.querySelectorAll('a[href^="tel:"]');
+    document.addEventListener(
+      "click",
+      function (event) {
+        const target = event.target;
+        const link = target && target.closest ? target.closest("a") : null;
 
-    phoneLinks.forEach((link) => {
-      link.addEventListener("click", function () {
+        if (!link) return;
+
+        const href = link.getAttribute("href") || "";
+
+        if (!href.startsWith("tel:")) return;
+
         trackEvent("phone_click", {
           event_label: "Phone Click",
-          button_text: link.innerText || "Phone Button",
+          button_text: (link.innerText || "Phone Button").trim(),
           target_url: link.href,
         });
-      });
-    });
+      },
+      true
+    );
+
+    log("Phone tracking ready");
   }
 
-  function setupLeadForms() {
-    const forms = document.querySelectorAll("[data-limcf-lead-form]");
+  function setupCustomEventTracking() {
+    document.addEventListener(
+      "click",
+      function (event) {
+        const target = event.target;
+        const element =
+          target && target.closest ? target.closest("[data-limcf-event]") : null;
 
-    forms.forEach((form) => {
-      form.addEventListener("submit", async function (event) {
-        event.preventDefault();
+        if (!element) return;
 
-        const formData = new FormData(form);
+        const eventType = element.getAttribute("data-limcf-event");
 
-        const leadData = {
-          name:
-            formData.get("name") ||
-            formData.get("nama") ||
-            formData.get("full_name") ||
-            "",
-          phone:
-            formData.get("phone") ||
-            formData.get("telepon") ||
-            formData.get("whatsapp") ||
-            formData.get("wa") ||
-            "",
-          email: formData.get("email") || "",
-          message:
-            formData.get("message") ||
-            formData.get("pesan") ||
-            formData.get("kebutuhan") ||
-            "",
-          source:
-            form.getAttribute("data-limcf-source") ||
-            "Form Website Sukses Jaya Mobilindo",
-          metadata: {
-            form_id: form.id || null,
-            form_name: form.getAttribute("name") || null,
-          },
-        };
+        if (!eventType) return;
 
-        const success = await submitLead(leadData);
-
-        if (success) {
-          trackEvent("lead_submit", {
-            event_label: "Lead Form Submit",
-            lead_name: leadData.name,
-            lead_phone: leadData.phone,
-            source: leadData.source,
-          });
-
-          form.reset();
-
-          alert(
-            "Terima kasih. Data Anda sudah terkirim. Tim Sukses Jaya Mobilindo akan segera menghubungi Anda."
-          );
-        } else {
-          alert(
-            "Maaf, data belum berhasil terkirim. Silakan hubungi kami melalui WhatsApp."
-          );
-        }
-      });
-    });
-  }
-
-  function setupCustomEvents() {
-    const elements = document.querySelectorAll("[data-limcf-event]");
-
-    elements.forEach((element) => {
-      element.addEventListener("click", function () {
-        trackEvent(element.getAttribute("data-limcf-event"), {
+        trackEvent(eventType, {
           event_label:
             element.getAttribute("data-limcf-label") ||
             element.innerText ||
@@ -208,16 +250,96 @@
           car_price: element.getAttribute("data-car-price") || null,
           target_url: element.href || null,
         });
-      });
-    });
+      },
+      true
+    );
+
+    log("Custom event tracking ready");
   }
 
-  function init() {
+  function setupLeadForms() {
+    document.addEventListener("submit", async function (event) {
+      const form = event.target;
+
+      if (!form || !form.matches || !form.matches("[data-limcf-lead-form]")) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const submitButton = form.querySelector('[type="submit"]');
+      const originalButtonText = submitButton ? submitButton.innerText : "";
+
+      if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.innerText = "Mengirim...";
+      }
+
+      const formData = new FormData(form);
+
+      const leadData = {
+        name:
+          formData.get("name") ||
+          formData.get("nama") ||
+          formData.get("full_name") ||
+          "",
+        phone:
+          formData.get("phone") ||
+          formData.get("telepon") ||
+          formData.get("whatsapp") ||
+          formData.get("wa") ||
+          "",
+        email: formData.get("email") || "",
+        message:
+          formData.get("message") ||
+          formData.get("pesan") ||
+          formData.get("kebutuhan") ||
+          "",
+        source:
+          form.getAttribute("data-limcf-source") ||
+          "Form Website Sukses Jaya Mobilindo",
+        metadata: {
+          form_id: form.id || null,
+          form_name: form.getAttribute("name") || null,
+        },
+      };
+
+      const success = await submitLead(leadData);
+
+      if (success) {
+        trackEvent("lead_submit", {
+          event_label: "Lead Form Submit",
+          lead_name: leadData.name,
+          lead_phone: leadData.phone,
+          source: leadData.source,
+        });
+
+        form.reset();
+
+        alert(
+          "Terima kasih. Data Anda sudah terkirim. Tim Sukses Jaya Mobilindo akan segera menghubungi Anda."
+        );
+      } else {
+        alert(
+          "Maaf, data belum berhasil terkirim. Silakan hubungi kami melalui WhatsApp."
+        );
+      }
+
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.innerText = originalButtonText;
+      }
+    });
+
+    log("Lead form tracking ready");
+  }
+
+  function initLIMCFConnector() {
     setupPageViewTracking();
     setupWhatsAppTracking();
     setupPhoneTracking();
+    setupCustomEventTracking();
     setupLeadForms();
-    setupCustomEvents();
 
     window.LIMCF = {
       track: trackEvent,
@@ -225,12 +347,12 @@
       config: LIMCF_CONFIG,
     };
 
-    console.log("LIMCF Connector active:", LIMCF_CONFIG.businessName);
+    console.log("LIMCF Connector active: Sukses Jaya Mobilindo");
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", initLIMCFConnector);
   } else {
-    init();
+    initLIMCFConnector();
   }
 })();
